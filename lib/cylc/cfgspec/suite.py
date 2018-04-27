@@ -61,10 +61,13 @@ def _coerce_cycletime(value, keys, _):
     if value == "now":
         # Handle this later in config.py when the suite UTC mode is known.
         return value
+    if "next" in value or "previous" in value:
+        # Handle this later, as for "now".
+        return value
     if re.match(r"\d+$", value):
         # Could be an old date-time cycle point format, or integer format.
         return value
-    if value.startswith("-") or value.startswith("+"):
+    if (value.startswith("-") or value.startswith("+")) and "P" not in value:
         # We don't know the value given for num expanded year digits...
         for i in range(1, 101):
             parser = TimePointParser(num_expanded_year_digits=i)
@@ -74,7 +77,19 @@ def _coerce_cycletime(value, keys, _):
                 continue
             return value
         raise IllegalValueError("cycle point", keys, value)
-    parser = TimePointParser()
+    if "P" in value:
+        # ICP is an offset
+        parser = DurationParser()
+        try:
+            if value.startswith("-"):
+                # parser doesn't allow negative duration with this setup?
+                parser.parse(value[1:])
+            else:
+                parser.parse(value)
+            return value
+        except ValueError:
+            raise IllegalValueError("cycle point", keys, value)
+    parser = TimePointParser(allow_truncated=True)
     try:
         parser.parse(value)
     except ValueError:

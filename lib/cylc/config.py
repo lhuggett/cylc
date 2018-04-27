@@ -40,6 +40,7 @@ from cylc.cycling.loader import (
     get_sequence, get_sequence_cls, init_cyclers, INTEGER_CYCLING_TYPE,
     ISO8601_CYCLING_TYPE)
 from cylc.cycling import IntervalParsingError
+from cylc.cycling.iso8601 import SuiteSpecifics
 from cylc.envvar import check_varnames
 import cylc.flags
 from cylc.graphnode import GraphNodeParser, GraphNodeError
@@ -49,7 +50,7 @@ from cylc.task_id import TaskID
 from cylc.task_trigger import TaskTrigger, Dependency
 from cylc.wallclock import get_current_time_string
 from isodatetime.data import Calendar
-from isodatetime.parsers import DurationParser
+from isodatetime.parsers import DurationParser, TimePointParser
 from parsec.OrderedDict import OrderedDictWithDefaults
 from parsec.util import replicate
 from cylc.suite_logging import OUT, ERR
@@ -68,6 +69,102 @@ NUM_RUNAHEAD_SEQ_POINTS = 5  # Number of cycle points to look at per sequence.
 
 # Message trigger offset regex.
 BCOMPAT_MSG_RE_C6 = re.compile(r'^(.*)\[\s*(([+-])?\s*(.*))?\s*\](.*)$')
+
+
+def ingest_time(value):
+    """
+    Allows for relative and truncated initial cycle point
+    """
+
+    # Send back integer cycling, date-only, and expanded datetimes.
+    if re.match(r"\d+$", value):
+        # Could be an old date-time cycle point format, or integer format.
+        return value
+    if (value.startswith("-") or value.startswith("+")) and "P" not in value:
+            # Expanded year
+            return value
+
+    parser = SuiteSpecifics.point_parser
+    offset = None
+
+    if "next" in value or "previous" in value:
+        my_now = parser.parse(get_current_time_string())
+
+        # break down ICP into constituent parts.
+        direction, tmp = value.split("(")
+        tmp, offset = tmp.split(")")
+
+        if offset.strip() == '':
+            offset = None
+        else:
+            offset = offset.strip()
+
+        timepoints = tmp.split(";")
+
+        for i_time, my_time in enumerate(timepoints):
+            try:
+                parsed_point = parser.parse(my_time.strip())
+                timepoints[i_time] = parsed_point + my_now
+            except ValueError:
+                raise SuiteConfigError(
+                    "ERROR: Illegal initial cycle point spec: %s" % (value)
+                    )
+
+            if direction == 'previous':
+                # for 'previous' determine next largest unit, and
+                # subtract 1 of it from each timepoint
+                # NB rather unsophisticated at present, as cannot
+                # handle differences between forms of day
+                duration_parser = SuiteSpecifics.interval_parser
+                next_unit = parsed_point.get_smallest_missing_property_name()
+                if next_unit == "minute_of_hour":
+                    go_back = "PT1M"
+                elif next_unit == "hour_of_day":
+                    go_back = "PT1H"
+                elif (next_unit == "day_of_week"
+                      or next_unit == "day_of_month"
+                      or next_unit == "day_of_year"):
+                    # Only "day_of_week" will currently be found
+                    go_back = "P1D"
+                elif next_unit == "week_of_year":
+                    go_back = "P1W"
+                elif next_unit == "month_of_year":
+                    go_back = "P1M"
+                elif next_unit == "year_of_decade":
+                    go_back = "P1Y"
+                elif next_unit == "year_of_century":
+                    go_back = "P1C"
+                timepoints[i_time] = (
+                    timepoints[i_time] - duration_parser.parse(go_back))
+
+        my_diff = []
+        for i_time, my_time in enumerate(timepoints):
+            my_diff.append(abs(my_time - my_now))
+
+        my_icp = timepoints[my_diff.index(min(my_diff))]
+
+    elif "P" in value:
+        my_icp = parser.parse(get_current_time_string())
+        offset = value
+
+    else:
+        timepoint = parser.parse(value)
+        if timepoint.truncated is False:
+            return value
+        my_icp = parser.parse(get_current_time_string()) + timepoint
+
+    if offset is not None:
+        # add/subtract offset duration to/from chosen timepoint
+        duration_parser = SuiteSpecifics.interval_parser
+        try:
+            offset = duration_parser.parse(offset)
+        except ValueError:
+            raise SuiteConfigError(
+                "ERROR: Illegal initial cycle point spec: %s" % (value)
+                )
+        my_icp = my_icp + offset
+
+    return str(my_icp)
 
 
 class SuiteConfigError(Exception):
@@ -336,6 +433,8 @@ class SuiteConfig(object):
                 "This suite requires an initial cycle point.")
         if icp == "now":
             icp = get_current_time_string()
+        else:
+            icp = ingest_time(icp)
         self.initial_point = get_point(icp).standardise()
         self.cfg['scheduling']['initial cycle point'] = str(self.initial_point)
         if cli_start_point_string:
