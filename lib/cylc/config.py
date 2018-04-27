@@ -50,7 +50,7 @@ from cylc.task_id import TaskID
 from cylc.task_trigger import TaskTrigger, Dependency
 from cylc.wallclock import get_current_time_string
 from isodatetime.data import Calendar
-from isodatetime.parsers import DurationParser, TimePointParser
+from isodatetime.parsers import DurationParser
 from parsec.OrderedDict import OrderedDictWithDefaults
 from parsec.util import replicate
 from cylc.suite_logging import OUT, ERR
@@ -73,7 +73,8 @@ BCOMPAT_MSG_RE_C6 = re.compile(r'^(.*)\[\s*(([+-])?\s*(.*))?\s*\](.*)$')
 
 def ingest_time(value):
     """
-    Allows for relative and truncated initial cycle point
+    Allows for relative and truncated initial cycle point,
+    and initial cycle point as an offset from 'now'
     """
 
     # Send back integer cycling, date-only, and expanded datetimes.
@@ -81,8 +82,8 @@ def ingest_time(value):
         # Could be an old date-time cycle point format, or integer format.
         return value
     if (value.startswith("-") or value.startswith("+")) and "P" not in value:
-            # Expanded year
-            return value
+        # Expanded year
+        return value
 
     parser = SuiteSpecifics.point_parser
     offset = None
